@@ -20,9 +20,164 @@ scripts/     import_pipelines.sh and run_pipeline.sh (Harness REST API helpers)
 ## Prerequisites
 
 1. **A Harness project.** The YAML uses placeholder org `my_org` and project `my_project`. To target your project, change `orgIdentifier` / `projectIdentifier` in each file, or let `scripts/import_pipelines.sh` rewrite them.
-2. **Harness Cloud build infrastructure** enabled for CI. The step image is pulled through the built-in `account.harnessImage` Docker connector.
+2. **Harness Cloud build infrastructure** enabled for CI. The step image is pulled through the built-in `account.harnessImage` Docker connector. No delegate is needed for this; see [Build infrastructure and delegates](#build-infrastructure-and-delegates) if you can't use Harness Cloud.
 3. **An API key secret** named `harness_api_key` at account scope. It must hold a Harness API key (PAT or service-account token) with CCM AutoStopping view/create/delete permissions. The pipelines read it with `<+secrets.getValue("account.harness_api_key")>`; change that line in each pipeline if your secret has a different identifier or scope.
 4. **A CCM AWS connector with Optimization (AutoStopping) enabled.** The examples use placeholder connector identifier `my_aws_ccm_connector` and display name `my-aws-ccm-connector`; replace both with your connector's values (**Account Settings → Connectors**).
+
+## Build infrastructure and delegates
+
+### Default setup: Harness Cloud, no delegate
+
+Every pipeline in `pipelines/` runs its stage on **Harness Cloud**:
+
+```yaml
+- stage:
+    type: CI
+    spec:
+      cloneCodebase: false
+      platform:
+        os: Linux
+        arch: Amd64
+      runtime:
+        type: Cloud
+        spec: {}
+```
+
+With this setup you **do not install or select a delegate**:
+
+- Harness starts a short-lived, Harness-hosted Linux VM for each run and deletes it afterwards.
+- The `alpine:3.20` step image is pulled from Docker Hub through the built-in `account.harnessImage` connector.
+- `account.harness_api_key` is read from the **Harness built-in secret manager**, which Harness Cloud can reach directly.
+- The step calls `https://app.harness.io/gateway/lw/api/...` over the public internet. Nothing in your network or cloud account is contacted directly; Harness itself starts/stops the instances through your CCM connector.
+
+### When you need an alternative
+
+Use one of the options below if any of these apply:
+
+- Harness Cloud is not enabled on your account or plan.
+- Your security policy requires pipeline steps to run inside your own network.
+- Your API key secret is stored in an external secret manager (HashiCorp Vault, AWS Secrets Manager, etc.) that is only reachable through a delegate.
+- You cannot pull images from Docker Hub and must use a private registry.
+
+All options use the same script. Only the stage's infrastructure section changes.
+
+### Option 1: Kubernetes cluster with a delegate (CI stage)
+
+The stage runs as a pod in your Kubernetes cluster. A delegate installed in that cluster creates the pod and relays logs to Harness.
+
+1. **Install a delegate in the cluster.** In Harness go to **Project Settings → Delegates → New Delegate → Kubernetes → Helm Chart**, give it a name (e.g. `autostopping-delegate`) and copy the generated command. It looks like this; use the values from the UI, especially the token:
+
+   ```sh
+   helm repo add harness-delegate https://app.harness.io/storage/harness-download/delegate-helm-chart/
+   helm repo update harness-delegate
+   helm upgrade -i autostopping-delegate --namespace harness-delegate-ng --create-namespace \
+     harness-delegate/harness-delegate-ng \
+     --set delegateName=autostopping-delegate \
+     --set accountId=<your account id> \
+     --set delegateToken=<token from the UI> \
+     --set managerEndpoint=https://app.harness.io \
+     --set delegateDockerImage=<image from the UI> \
+     --set replicas=1 --set upgrader.enabled=true
+   ```
+
+   Wait until the delegate shows **Connected** on the Delegates page.
+
+2. **Create a Kubernetes cluster connector.** **Project Settings → Connectors → New Connector → Kubernetes cluster** → **Use the credentials of a specific Harness Delegate** → select `autostopping-delegate` → **Save and Continue** → **Finish**. Note its identifier, e.g. `my_k8s_connector`.
+
+3. **Change the stage infrastructure** in each pipeline. Replace the `platform:` and `runtime:` blocks with:
+
+   ```yaml
+   - stage:
+       type: CI
+       spec:
+         cloneCodebase: false
+         infrastructure:
+           type: KubernetesDirect
+           spec:
+             connectorRef: my_k8s_connector
+             namespace: harness-delegate-ng
+             automountServiceAccountToken: true
+             nodeSelector: {}
+             os: Linux
+   ```
+
+   In the UI: open the stage → **Infrastructure** tab → **Kubernetes** → pick the connector and namespace.
+
+4. **Image access.** The pod pulls `alpine:3.20` and runs `apk add curl jq`, so the cluster needs outbound access to Docker Hub and the Alpine package mirror. If it doesn't have that, build an image with `curl` and `jq` preinstalled, push it to your registry, create a Docker registry connector for it, then set the step's `connectorRef` / `image` to that and delete the `apk add` line.
+
+The pod also needs outbound HTTPS to `app.harness.io`. Full reference: [Set up a Kubernetes cluster build infrastructure](https://developer.harness.io/continuous-integration/use-harness-ci/use-harness-ci/set-up-build-infrastructure/k8s-build-infrastructure).
+
+### Option 2: Run directly on a delegate (Custom stage + Shell Script step)
+
+No build pod and no CI module needed. The script runs inside the delegate process itself. This suits accounts that already have a delegate (Kubernetes or Docker) and don't use Harness CI.
+
+1. Install a delegate as in Option 1, step 1 (or **Docker** instead of Kubernetes), and give it a tag such as `autostopping` (**Delegate → Edit → Tags**).
+2. Convert each pipeline's stage from `CI` to `Custom` and the `Run` step to a `ShellScript` step. Skeleton for Rule Create:
+
+   ```yaml
+   stages:
+     - stage:
+         name: Create Rule
+         identifier: create_rule
+         type: Custom
+         spec:
+           execution:
+             steps:
+               - step:
+                   type: ShellScript
+                   name: Create AutoStopping Rule
+                   identifier: create_autostopping_rule
+                   timeout: 10m
+                   spec:
+                     shell: Bash
+                     onDelegate: true
+                     delegateSelectors:
+                       - autostopping
+                     source:
+                       type: Inline
+                       spec:
+                         script: |
+                           # paste the Run step's command here, minus the "apk add" line
+                     environmentVariables:
+                       - name: ACCOUNT_ID
+                         type: String
+                         value: <+account.identifier>
+                       - name: API_TOKEN
+                         type: String
+                         value: <+secrets.getValue("account.harness_api_key")>
+                       - name: RULE_NAME
+                         type: String
+                         value: <+pipeline.variables.RULE_NAME>
+                       # ...one entry per variable, same as the Run step's envVariables
+                     outputVariables: []
+   ```
+
+   The pipeline `variables:` section stays as it is.
+
+3. **`curl` and `jq` on the delegate.** The delegate image ships `curl` but not always `jq`. Either add `jq` to a custom delegate image, or put this at the top of the script so it downloads `jq` when it's missing:
+
+   ```sh
+   command -v jq >/dev/null || {
+     curl -sSL -o /tmp/jq https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64
+     chmod +x /tmp/jq
+     export PATH=/tmp:$PATH
+   }
+   ```
+
+The delegate needs outbound HTTPS to `app.harness.io` (and to `github.com` if you use the `jq` download above).
+
+### Option 3: Self-hosted VM build infrastructure
+
+If you run CI builds on your own VMs (AWS, Azure, GCP or a local machine), set the stage's **Infrastructure** to **VMs** or **Local** and point it at your pool/runner. These also need a delegate plus the Harness runner; follow [Set up build infrastructure](https://developer.harness.io/continuous-integration/use-harness-ci/use-harness-ci/set-up-build-infrastructure) in the Harness docs. The script and step stay unchanged, as long as the VM can run Docker containers and reach Docker Hub and `app.harness.io`.
+
+### Which one to pick
+
+| Situation | Use |
+|---|---|
+| Harness Cloud available, built-in secret manager | Default (no delegate) |
+| Must run in your network, you use Harness CI | Option 1 (Kubernetes) or Option 3 (VMs) |
+| No CI module, or you just want the simplest delegate-based setup | Option 2 (Custom stage on a delegate) |
+| API key secret in Vault / AWS Secrets Manager behind a delegate | Option 1, 2 or 3, with the secret manager connector using the same delegate |
 
 ## Install the pipelines
 
