@@ -1,0 +1,221 @@
+pipeline:
+  name: AutoStopping Onboarding Config
+  identifier: autostopping_onboarding_config
+  projectIdentifier: my_project
+  orgIdentifier: my_org
+  tags:
+    ccm: autostopping
+  description: Creates an AutoStopping onboarding config via the Lightwing API.
+  variables:
+    - name: NAME
+      type: String
+      description: Onboarding config name
+      required: true
+      value: <+input>
+    - name: KIND
+      type: String
+      description: Onboarding config kind
+      required: true
+      value: <+input>
+    - name: ENABLED
+      type: String
+      description: Enable the config (JSON boolean)
+      required: true
+      value: <+input>.default(true).allowedValues(true,false)
+    - name: CONNECTOR_NAME_REGEX
+      type: String
+      description: Regex matched against cloud connector names
+      required: false
+      value: <+input>.default(.*)
+    - name: ALLOWED_PROVIDERS
+      type: String
+      description: Allowed cloud providers (e.g. aws, azure, gcp)
+      required: true
+      value: <+input>
+    - name: TIME_ZONE
+      type: String
+      description: Time zone for schedules
+      required: true
+      value: <+input>.default(UTC)
+    - name: RULE_LIMIT
+      type: String
+      description: Max rules to create (JSON number)
+      required: true
+      value: <+input>.default(10)
+    - name: DRY_RUN
+      type: String
+      description: Dry run only (JSON boolean)
+      required: true
+      value: <+input>.default(true).allowedValues(true,false)
+    - name: TAG_KEY
+      type: String
+      description: Resource tag key to filter on (leave empty for no tag filter)
+      required: false
+      value: <+input>.default()
+    - name: TAG_VALUE
+      type: String
+      description: Resource tag value to filter on
+      required: false
+      value: <+input>.default()
+    - name: IDLE_TIME
+      type: String
+      description: Idle time in minutes (JSON number)
+      required: true
+      value: <+input>.default(15)
+    - name: DEFAULT_SCHEDULE
+      type: String
+      description: Default schedule applied to rules
+      required: false
+      value: <+input>.default()
+    - name: SCHEDULE_TAG_KEY
+      type: String
+      description: Tag key that carries a per-resource schedule
+      required: false
+      value: <+input>.default()
+    - name: CONNECTOR_NAME_EXCLUDE
+      type: String
+      description: Connector names to exclude
+      required: false
+      value: <+input>.default()
+    - name: PATCH_KEY
+      type: String
+      description: Tag key used for schedule patching
+      required: false
+      value: <+input>.default()
+    - name: PATCH_VALUE_1
+      type: String
+      description: First patch tag value
+      required: false
+      value: <+input>.default()
+    - name: PATCH_SCHEDULE_1
+      type: String
+      description: Schedule for the first patch tag value
+      required: false
+      value: <+input>.default()
+    - name: PATCH_VALUE_2
+      type: String
+      description: Second patch tag value
+      required: false
+      value: <+input>.default()
+    - name: PATCH_SCHEDULE_2
+      type: String
+      description: Schedule for the second patch tag value
+      required: false
+      value: <+input>.default()
+  stages:
+    - stage:
+        name: Create Onboarding Config
+        identifier: create_onboarding_config
+        type: CI
+        spec:
+          cloneCodebase: false
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Create AutoStopping Config
+                  identifier: create_autostopping_config
+                  spec:
+                    connectorRef: account.harnessImage
+                    image: alpine:3.20
+                    shell: Sh
+                    envVariables:
+                      ACCOUNT_ID: <+account.identifier>
+                      API_TOKEN: <+secrets.getValue("account.harness_api_key")>
+                      NAME: <+pipeline.variables.NAME>
+                      KIND: <+pipeline.variables.KIND>
+                      ENABLED: <+pipeline.variables.ENABLED>
+                      CONNECTOR_NAME_REGEX: <+pipeline.variables.CONNECTOR_NAME_REGEX>
+                      ALLOWED_PROVIDERS: <+pipeline.variables.ALLOWED_PROVIDERS>
+                      TIME_ZONE: <+pipeline.variables.TIME_ZONE>
+                      RULE_LIMIT: <+pipeline.variables.RULE_LIMIT>
+                      DRY_RUN: <+pipeline.variables.DRY_RUN>
+                      TAG_KEY: <+pipeline.variables.TAG_KEY>
+                      TAG_VALUE: <+pipeline.variables.TAG_VALUE>
+                      IDLE_TIME: <+pipeline.variables.IDLE_TIME>
+                      DEFAULT_SCHEDULE: <+pipeline.variables.DEFAULT_SCHEDULE>
+                      SCHEDULE_TAG_KEY: <+pipeline.variables.SCHEDULE_TAG_KEY>
+                      CONNECTOR_NAME_EXCLUDE: <+pipeline.variables.CONNECTOR_NAME_EXCLUDE>
+                      PATCH_KEY: <+pipeline.variables.PATCH_KEY>
+                      PATCH_VALUE_1: <+pipeline.variables.PATCH_VALUE_1>
+                      PATCH_SCHEDULE_1: <+pipeline.variables.PATCH_SCHEDULE_1>
+                      PATCH_VALUE_2: <+pipeline.variables.PATCH_VALUE_2>
+                      PATCH_SCHEDULE_2: <+pipeline.variables.PATCH_SCHEDULE_2>
+                    command: |
+                      set -eu
+                      apk add --no-cache curl jq >/dev/null
+
+                      # Harness does not export env vars whose value is empty, so default the optional ones for set -u.
+                      : "${TAG_KEY:=}" "${TAG_VALUE:=}" "${DEFAULT_SCHEDULE:=}" "${SCHEDULE_TAG_KEY:=}" \
+                        "${CONNECTOR_NAME_EXCLUDE:=}" "${PATCH_KEY:=}" "${PATCH_VALUE_1:=}" \
+                        "${PATCH_SCHEDULE_1:=}" "${PATCH_VALUE_2:=}" "${PATCH_SCHEDULE_2:=}"
+
+                      body=$(jq -n \
+                        --arg name "$NAME" \
+                        --arg kind "$KIND" \
+                        --argjson enabled "$ENABLED" \
+                        --arg regex "$CONNECTOR_NAME_REGEX" \
+                        --arg providers "$ALLOWED_PROVIDERS" \
+                        --arg tz "$TIME_ZONE" \
+                        --argjson rule_limit "$RULE_LIMIT" \
+                        --argjson dry_run "$DRY_RUN" \
+                        --arg tag_key "$TAG_KEY" \
+                        --arg tag_value "$TAG_VALUE" \
+                        --argjson idle_time "$IDLE_TIME" \
+                        --arg default_schedule "$DEFAULT_SCHEDULE" \
+                        --arg schedule_tag_key "$SCHEDULE_TAG_KEY" \
+                        --arg connector_name_exclude "$CONNECTOR_NAME_EXCLUDE" \
+                        --arg patch_key "$PATCH_KEY" \
+                        --arg patch_value_1 "$PATCH_VALUE_1" \
+                        --arg patch_schedule_1 "$PATCH_SCHEDULE_1" \
+                        --arg patch_value_2 "$PATCH_VALUE_2" \
+                        --arg patch_schedule_2 "$PATCH_SCHEDULE_2" \
+                        '{
+                          name: $name,
+                          kind: $kind,
+                          enabled: $enabled,
+                          connector_name_regex: $regex,
+                          allowed_providers: $providers,
+                          time_zone: $tz,
+                          rule_limit: $rule_limit,
+                          dry_run: $dry_run,
+                          objects_filter: (
+                            if $tag_key == "" then {} else {tags: {($tag_key): $tag_value}} end
+                          ),
+                          options: ({
+                            idle_time: $idle_time,
+                            default_schedule: $default_schedule,
+                            schedule_tag_key: $schedule_tag_key,
+                            connector_name_exclude: $connector_name_exclude
+                          } + (
+                            if $patch_key == "" then {} else {
+                              patch_schedule: {
+                                key: $patch_key,
+                                values: ([
+                                  {value: $patch_value_1, schedule: $patch_schedule_1},
+                                  {value: $patch_value_2, schedule: $patch_schedule_2}
+                                ] | map(select(.value != "")))
+                              }
+                            } end
+                          ))
+                        }')
+
+                      url="https://app.harness.io/gateway/lw/api/accounts/${ACCOUNT_ID}/autostopping/onboarding/configs"
+                      http_code=$(curl -sS -o /tmp/response.json -w '%{http_code}' \
+                        -X POST "$url" \
+                        -H "x-api-key: ${API_TOKEN}" \
+                        -H "Content-Type: application/json" \
+                        -d "$body")
+
+                      echo "$body" | jq .
+                      jq . /tmp/response.json || cat /tmp/response.json
+                      if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+                        echo "create config failed with HTTP ${http_code}" >&2
+                        exit 1
+                      fi

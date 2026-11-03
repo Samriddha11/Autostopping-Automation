@@ -1,0 +1,209 @@
+pipeline:
+  name: AutoStopping Rule Create
+  identifier: autostopping_rule_create
+  projectIdentifier: my_project
+  orgIdentifier: my_org
+  tags:
+    ccm: autostopping
+  description: Creates a tag-based EC2 AutoStopping rule with a fixed uptime schedule via the Lightwing API. Skips creation if a rule with the same tag filter already exists on the connector.
+  variables:
+    - name: RULE_NAME
+      type: String
+      description: AutoStopping rule name
+      required: true
+      value: <+input>
+    - name: CONNECTOR_ID
+      type: String
+      description: CCM AWS connector identifier
+      required: true
+      value: <+input>.default(my_aws_ccm_connector)
+    - name: CONNECTOR_NAME
+      type: String
+      description: CCM AWS connector display name
+      required: true
+      value: <+input>.default(my-aws-ccm-connector)
+    - name: TAG_KEY
+      type: String
+      description: EC2 tag key used to select instances
+      required: true
+      value: <+input>
+    - name: TAG_VALUE
+      type: String
+      description: EC2 tag value used to select instances
+      required: true
+      value: <+input>
+    - name: REGION
+      type: String
+      description: AWS region of the instances
+      required: true
+      value: <+input>.default(us-east-1)
+    - name: IDLE_TIME
+      type: String
+      description: Idle time in minutes (JSON number)
+      required: true
+      value: <+input>.default(15)
+    - name: DRY_RUN
+      type: String
+      description: Dry run only (JSON boolean)
+      required: true
+      value: <+input>.default(true).allowedValues(true,false)
+    - name: SCHEDULE_NAME
+      type: String
+      description: Fixed uptime schedule name
+      required: true
+      value: <+input>
+    - name: TIME_ZONE
+      type: String
+      description: IANA time zone of the schedule
+      required: true
+      value: <+input>.default(Asia/Kolkata)
+    - name: UPTIME_DAYS
+      type: String
+      description: Comma-separated weekdays for uptime, 0=Sunday ... 6=Saturday
+      required: true
+      value: <+input>.default(1,2,3,4,5)
+    - name: UPTIME_START
+      type: String
+      description: Uptime start, HH:MM (24h)
+      required: true
+      value: <+input>.default(09:00)
+    - name: UPTIME_END
+      type: String
+      description: Uptime end, HH:MM (24h)
+      required: true
+      value: <+input>.default(18:00)
+  stages:
+    - stage:
+        name: Create Rule
+        identifier: create_rule
+        type: CI
+        spec:
+          cloneCodebase: false
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Create AutoStopping Rule
+                  identifier: create_autostopping_rule
+                  spec:
+                    connectorRef: account.harnessImage
+                    image: alpine:3.20
+                    shell: Sh
+                    envVariables:
+                      ACCOUNT_ID: <+account.identifier>
+                      API_TOKEN: <+secrets.getValue("account.harness_api_key")>
+                      RULE_NAME: <+pipeline.variables.RULE_NAME>
+                      CONNECTOR_ID: <+pipeline.variables.CONNECTOR_ID>
+                      CONNECTOR_NAME: <+pipeline.variables.CONNECTOR_NAME>
+                      TAG_KEY: <+pipeline.variables.TAG_KEY>
+                      TAG_VALUE: <+pipeline.variables.TAG_VALUE>
+                      REGION: <+pipeline.variables.REGION>
+                      IDLE_TIME: <+pipeline.variables.IDLE_TIME>
+                      DRY_RUN: <+pipeline.variables.DRY_RUN>
+                      SCHEDULE_NAME: <+pipeline.variables.SCHEDULE_NAME>
+                      TIME_ZONE: <+pipeline.variables.TIME_ZONE>
+                      UPTIME_DAYS: <+pipeline.variables.UPTIME_DAYS>
+                      UPTIME_START: <+pipeline.variables.UPTIME_START>
+                      UPTIME_END: <+pipeline.variables.UPTIME_END>
+                    command: |
+                      set -eu
+                      apk add --no-cache curl jq >/dev/null
+                      base="https://app.harness.io/gateway/lw/api/accounts/${ACCOUNT_ID}"
+                      q="accountIdentifier=${ACCOUNT_ID}"
+
+                      call() {
+                        method=$1; url=$2; data=${3:-}
+                        if [ -n "$data" ]; then
+                          code=$(curl -sS -o /tmp/out.json -w '%{http_code}' -X "$method" "$url" \
+                            -H "x-api-key: ${API_TOKEN}" -H "Content-Type: application/json" -d "$data")
+                        else
+                          code=$(curl -sS -o /tmp/out.json -w '%{http_code}' -X "$method" "$url" -H "x-api-key: ${API_TOKEN}")
+                        fi
+                        echo "${method} ${url} -> HTTP ${code}"
+                        jq . /tmp/out.json 2>/dev/null || cat /tmp/out.json
+                        [ "$code" -ge 200 ] && [ "$code" -lt 300 ]
+                      }
+
+                      call GET "${base}/autostopping/rules?${q}&page=1&limit=500" >/dev/null
+                      existing=$(jq -r --arg c "$CONNECTOR_ID" --arg k "$TAG_KEY" --arg v "$TAG_VALUE" \
+                        '[(.response // [])[] | select(.cloud_account_id == $c and .routing.instance.filter.tags[$k] == $v)] | first | .id // empty' /tmp/out.json)
+                      if [ -n "$existing" ]; then
+                        echo "Rule ${existing} already selects ${TAG_KEY}=${TAG_VALUE} on ${CONNECTOR_ID}; reusing it."
+                        rule_id=$existing
+                      else
+                      rule_body=$(jq -n \
+                        --arg name "$RULE_NAME" --arg acct "$ACCOUNT_ID" \
+                        --arg conn "$CONNECTOR_ID" --arg conn_name "$CONNECTOR_NAME" \
+                        --arg tag_key "$TAG_KEY" --arg tag_value "$TAG_VALUE" --arg region "$REGION" \
+                        --argjson idle "$IDLE_TIME" --argjson dry_run "$DRY_RUN" \
+                        '{
+                          service: {
+                            name: $name,
+                            account_identifier: $acct,
+                            fulfilment: "ondemand",
+                            kind: "instance",
+                            cloud_account_id: $conn,
+                            idle_time_mins: $idle,
+                            custom_domains: [],
+                            match_all_subdomains: false,
+                            disabled: false,
+                            routing: {instance: {filter: {tags: {($tag_key): $tag_value}, regions: [$region]}}},
+                            opts: {
+                              preserve_private_ip: false,
+                              delete_cloud_resources: false,
+                              always_use_private_ip: false,
+                              hide_progress_page: false,
+                              dry_run: $dry_run
+                            },
+                            metadata: {cloud_provider_details: {name: $conn_name}}
+                          },
+                          apply_now: true
+                        }')
+                      call POST "${base}/autostopping/v2/rules?${q}" "$rule_body"
+                      rule_id=$(jq -r '.response.id' /tmp/out.json)
+                      echo "Created rule ${rule_id}"
+                      fi
+
+                      call GET "${base}/schedules?${q}&res_type=autostop_rule&res_id=${rule_id}" >/dev/null \
+                        || { echo "Could not list schedules for rule ${rule_id}; creating ${SCHEDULE_NAME} anyway."; echo '{}' > /tmp/out.json; }
+                      if jq -e --arg n "$SCHEDULE_NAME" '[(.response // [])[] | select(.name == $n)] | length > 0' /tmp/out.json >/dev/null; then
+                        echo "Schedule ${SCHEDULE_NAME} is already attached to rule ${rule_id}; nothing to do."
+                        exit 0
+                      fi
+
+                      sh_=${UPTIME_START%%:*}; sm=${UPTIME_START##*:}
+                      eh=${UPTIME_END%%:*}; em=${UPTIME_END##*:}
+                      schedule_body=$(jq -n \
+                        --arg name "$SCHEDULE_NAME" --arg acct "$ACCOUNT_ID" --arg rule_id "$rule_id" \
+                        --arg tz "$TIME_ZONE" --arg days "$UPTIME_DAYS" \
+                        --argjson sh "${sh_#0}" --argjson sm "${sm#0}" \
+                        --argjson eh "${eh#0}" --argjson em "${em#0}" \
+                        --arg start "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+                        '{
+                          schedule: {
+                            name: $name,
+                            account: $acct,
+                            description: "Uptime window managed by the AutoStopping Rule Create pipeline",
+                            resources: [{id: $rule_id, type: "autostop_rule"}],
+                            details: {
+                              uptime: {
+                                period: {start: $start},
+                                days: {
+                                  days: ($days | split(",") | map(tonumber)),
+                                  all_day: false,
+                                  start_time: {hour: $sh, min: $sm},
+                                  end_time: {hour: $eh, min: $em}
+                                }
+                              },
+                              timezone: $tz
+                            }
+                          }
+                        }')
+                      call POST "${base}/schedules?cloud_account_id=${CONNECTOR_ID}&${q}" "$schedule_body"
+                      echo "Attached schedule $(jq -r '.response.id // .id' /tmp/out.json) to rule ${rule_id}"

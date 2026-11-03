@@ -1,0 +1,75 @@
+pipeline:
+  name: AutoStopping Rules Report
+  identifier: autostopping_rules_report
+  projectIdentifier: my_project
+  orgIdentifier: my_org
+  tags:
+    ccm: autostopping
+  description: Read-only report of AutoStopping rules and onboarding configs via the Lightwing API.
+  variables:
+    - name: CONNECTOR_ID
+      type: String
+      description: CCM connector identifier to report on
+      required: true
+      value: <+input>.default(my_aws_ccm_connector)
+    - name: TAG_KEY
+      type: String
+      description: Tag key to look for in rule filters
+      required: true
+      value: <+input>.default(autostopping)
+  stages:
+    - stage:
+        name: Report
+        identifier: report
+        type: CI
+        spec:
+          cloneCodebase: false
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: List AutoStopping Rules
+                  identifier: list_autostopping_rules
+                  spec:
+                    connectorRef: account.harnessImage
+                    image: alpine:3.20
+                    shell: Sh
+                    envVariables:
+                      ACCOUNT_ID: <+account.identifier>
+                      API_TOKEN: <+secrets.getValue("account.harness_api_key")>
+                      CONNECTOR_ID: <+pipeline.variables.CONNECTOR_ID>
+                      TAG_KEY: <+pipeline.variables.TAG_KEY>
+                    command: |
+                      set -eu
+                      apk add --no-cache curl jq >/dev/null
+                      base="https://app.harness.io/gateway/lw/api/accounts/${ACCOUNT_ID}"
+
+                      get() {
+                        code=$(curl -sS -o /tmp/out.json -w '%{http_code}' -H "x-api-key: ${API_TOKEN}" "$1")
+                        echo "GET $1 -> HTTP ${code}"
+                      }
+
+                      echo "===== Onboarding configs ====="
+                      get "${base}/autostopping/onboarding/configs?accountIdentifier=${ACCOUNT_ID}"
+                      jq . /tmp/out.json || cat /tmp/out.json
+
+                      echo "===== All AutoStopping rules (summary) ====="
+                      get "${base}/autostopping/rules?accountIdentifier=${ACCOUNT_ID}&page=1&limit=200"
+                      cp /tmp/out.json /tmp/rules.json
+                      jq -r '(.response // .data // .) | if type=="array" then . else (.records // .rules // []) end
+                        | .[] | [.id, .name, .kind, .cloud_account_id, (.disabled|tostring), (.opts.dry_run|tostring), .status] | @tsv' /tmp/rules.json \
+                        || cat /tmp/rules.json
+
+                      echo "===== Rules on connector ${CONNECTOR_ID} (full JSON) ====="
+                      jq --arg c "$CONNECTOR_ID" '(.response // .data // .) | if type=="array" then . else (.records // .rules // []) end
+                        | map(select(.cloud_account_id == $c))' /tmp/rules.json || true
+
+                      echo "===== Rules whose definition mentions tag ${TAG_KEY} ====="
+                      jq --arg t "$TAG_KEY" '(.response // .data // .) | if type=="array" then . else (.records // .rules // []) end
+                        | map(select(tostring | contains($t))) | map({id, name, cloud_account_id, routing})' /tmp/rules.json || true

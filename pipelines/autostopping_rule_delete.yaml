@@ -1,0 +1,58 @@
+pipeline:
+  name: AutoStopping Rule Delete
+  identifier: autostopping_rule_delete
+  projectIdentifier: my_project
+  orgIdentifier: my_org
+  tags:
+    ccm: autostopping
+  description: Deletes one AutoStopping rule by ID via the Lightwing API, printing it first.
+  variables:
+    - name: RULE_ID
+      type: String
+      description: ID of the AutoStopping rule to delete
+      required: true
+      value: <+input>
+  stages:
+    - stage:
+        name: Delete Rule
+        identifier: delete_rule
+        type: CI
+        spec:
+          cloneCodebase: false
+          platform:
+            os: Linux
+            arch: Amd64
+          runtime:
+            type: Cloud
+            spec: {}
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Delete AutoStopping Rule
+                  identifier: delete_autostopping_rule
+                  spec:
+                    connectorRef: account.harnessImage
+                    image: alpine:3.20
+                    shell: Sh
+                    envVariables:
+                      ACCOUNT_ID: <+account.identifier>
+                      API_TOKEN: <+secrets.getValue("account.harness_api_key")>
+                      RULE_ID: <+pipeline.variables.RULE_ID>
+                    command: |
+                      set -eu
+                      apk add --no-cache curl jq >/dev/null
+                      base="https://app.harness.io/gateway/lw/api/accounts/${ACCOUNT_ID}"
+                      q="accountIdentifier=${ACCOUNT_ID}"
+
+                      code=$(curl -sS -o /tmp/out.json -w '%{http_code}' -H "x-api-key: ${API_TOKEN}" \
+                        "${base}/autostopping/v2/rules/${RULE_ID}?${q}")
+                      echo "GET rule ${RULE_ID} -> HTTP ${code}"
+                      jq '.response.service // .response | {id, name, cloud_account_id, status, filter: .routing.instance.filter.tags}' /tmp/out.json \
+                        || cat /tmp/out.json
+
+                      code=$(curl -sS -o /tmp/out.json -w '%{http_code}' -X DELETE -H "x-api-key: ${API_TOKEN}" \
+                        "${base}/autostopping/rules/${RULE_ID}?${q}")
+                      echo "DELETE rule ${RULE_ID} -> HTTP ${code}"
+                      jq . /tmp/out.json 2>/dev/null || cat /tmp/out.json
+                      [ "$code" -ge 200 ] && [ "$code" -lt 300 ]

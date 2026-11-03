@@ -1,0 +1,60 @@
+pipeline:
+  identifier: autostopping_onboarding_config
+  variables:
+    - name: NAME
+      type: String
+      value: "aws-autostopping-onboarding"
+    - name: KIND
+      type: String
+      value: "instance"
+    - name: ENABLED
+      type: String
+      value: "true"
+    - name: CONNECTOR_NAME_REGEX
+      type: String
+      value: "^my-aws-ccm-connector$"
+    - name: ALLOWED_PROVIDERS
+      type: String
+      value: "aws"
+    - name: TIME_ZONE
+      type: String
+      value: "UTC"
+    - name: RULE_LIMIT
+      type: String
+      value: "10"
+    - name: DRY_RUN
+      type: String
+      value: "true"
+    - name: TAG_KEY
+      type: String
+      value: "autostopping"
+    - name: TAG_VALUE
+      type: String
+      value: "yes"
+    - name: IDLE_TIME
+      type: String
+      value: "15"
+    - name: DEFAULT_SCHEDULE
+      type: String
+      value: "9-17"
+    - name: SCHEDULE_TAG_KEY
+      type: String
+      value: "EC2Schedule"
+    - name: CONNECTOR_NAME_EXCLUDE
+      type: String
+      value: ""
+    - name: PATCH_KEY
+      type: String
+      value: ""
+    - name: PATCH_VALUE_1
+      type: String
+      value: ""
+    - name: PATCH_SCHEDULE_1
+      type: String
+      value: ""
+    - name: PATCH_VALUE_2
+      type: String
+      value: ""
+    - name: PATCH_SCHEDULE_2
+      type: String
+      value: ""

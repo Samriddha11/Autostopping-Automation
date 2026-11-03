@@ -1,0 +1,9 @@
+pipeline:
+  identifier: autostopping_rules_report
+  variables:
+    - name: CONNECTOR_ID
+      type: String
+      value: "my_aws_ccm_connector"
+    - name: TAG_KEY
+      type: String
+      value: "autostopping"

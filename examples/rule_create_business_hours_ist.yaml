@@ -1,0 +1,42 @@
+pipeline:
+  identifier: autostopping_rule_create
+  variables:
+    - name: RULE_NAME
+      type: String
+      value: "autostopping-business-hours"
+    - name: CONNECTOR_ID
+      type: String
+      value: "my_aws_ccm_connector"
+    - name: CONNECTOR_NAME
+      type: String
+      value: "my-aws-ccm-connector"
+    - name: TAG_KEY
+      type: String
+      value: "autostopping"
+    - name: TAG_VALUE
+      type: String
+      value: "yes"
+    - name: REGION
+      type: String
+      value: "us-east-1"
+    - name: IDLE_TIME
+      type: String
+      value: "15"
+    - name: DRY_RUN
+      type: String
+      value: "true"
+    - name: SCHEDULE_NAME
+      type: String
+      value: "business-hours-ist"
+    - name: TIME_ZONE
+      type: String
+      value: "Asia/Kolkata"
+    - name: UPTIME_DAYS
+      type: String
+      value: "1,2,3,4,5"
+    - name: UPTIME_START
+      type: String
+      value: "09:00"
+    - name: UPTIME_END
+      type: String
+      value: "18:00"
